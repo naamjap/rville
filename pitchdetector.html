@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Aubio Pitch</title>
+    <style>
+      html {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        height: 100%;
+        font-family: Arial, sans-serif;
+      }
+      canvas {
+        position: absolute;
+        top: 0;
+        z-index: -1;
+        width: 100%;
+        height: 100%;
+        background-color: rgb(36, 23, 23); /* Set canvas background to black */
+      }
+      #pitch {
+        position: absolute;
+        top: 20%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 5vw;
+        color: white;
+        background-color: rgba(0, 0, 0, 0.5);
+        padding: 10px;
+        border-radius: 10px;
+      }
+      #start-button {
+        position: absolute;
+        top: 10%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        padding: 10px 20px;
+        font-size: 1.5rem;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas></canvas>
+    <div id="pitch">0 Hz</div>
+    <form action="/convert" method="post">
+      <label for="url">YouTube URL:</label>
+      <input type="text" id="url" name="url" required />
+      <button type="submit">Convert</button>
+    </form>
+    <audio src="sarangi.mp3" controls></audio>
+    <button id="start-button">Start Pitch Detection</button>
+    <button id="stop-button">Stop Pitch Detection</button>
+    <textarea id="noteSequence" rows="20" cols="20" readonly></textarea>
+    <script src="https://unpkg.com/aubiojs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/tone@latest/build/Tone.min.js"></script>
+
+    <script>
+      let audioContext, scriptProcessor, pitchDetector;
+      let count = 0;
+      let toggle = true;
+      const audio = document.querySelector("audio");
+      const maxFrequency = 500;
+      const bufferSize = 1 << 12;
+      //const size = bufferSize / (1 << 10);
+      const size = 8096 / (1 << 10);
+
+      const inputField = document.getElementById('noteSequence');
+      
+      const pitchElement = document.querySelector("#pitch");
+      let pointCount = 0; // Initialize point counter
+      let isRunning = false; // Initialize isRunning variable
+
+      // Set up the canvas
+      const canvas = document.querySelector("canvas");
+      const canvasContext = canvas.getContext("2d");
+      canvas.width = document.body.clientWidth;
+      canvas.height = document.body.clientHeight;
+
+      // Mapping of traditional note names to custom names
+      const noteMapping = {
+        C: "S",
+        "C#": "r",
+        D: "R",
+        "D#": "g",
+        E: "G",
+        F: "M",
+        "F#": "m",
+        G: "P",
+        "G#": "d",
+        A: "D",
+        "A#": "n",
+        B: "N",
+      };
+
+      // Function to get custom note name from traditional note name
+      function getCustomNoteName(toneNote) {
+        // Extract the note name (e.g., C4 -> C)
+        const noteName = toneNote.replace(/\d+$/, "");
+
+        // Extract the digit (e.g., C4 -> 4)
+        const octave = toneNote.match(/\d+$/)[0];
+
+        // Get the custom note name
+        const customNoteName = (noteMapping[noteName] || noteName) + octave;
+
+        return customNoteName;
+      }
+
+      function drawLogic(canvas, canvasContext) {
+        const data = event.inputBuffer.getChannelData(0);
+        const rawFrequency = pitchDetector.do(data); // Frequency without smoothing
+
+        // Calculate the amplitude (RMS)
+        const amplitude = Math.sqrt(
+          data.reduce((sum, value) => sum + value * value, 0) / data.length
+        );
+
+        const x = (count * size) % canvas.width;
+       
+       // const pointSize = 10;
+
+        if (x < size) {
+          canvasContext.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // Update the pitch element with the smoothed frequency
+        if (rawFrequency > 0) {
+          // Draw the raw (unsmoothed) frequency line in red
+          
+          const yRaw =
+            canvas.height - (rawFrequency / maxFrequency) * canvas.height;
+          canvasContext.beginPath();
+        //  canvasContext.fillStyle = "red";
+        //  canvasContext.fillRect(x , yRaw, pointSize, pointSize);
+
+        // Update x position for the next point
+ 
+          canvasContext.arc(x, yRaw, 5, 0, 2 * Math.PI);
+          canvasContext.fillStyle = "red";
+          canvasContext.fill();
+        //  x += spacing;
+
+          // Get the traditional note name from the frequency
+          const toneNote = Tone.Frequency(rawFrequency).toNote();
+
+          customNoteName = getCustomNoteName(toneNote);
+
+          canvasContext.font = "12px Roboto"; // Set font size and type
+          canvasContext.fillStyle = "white"; // Set text color
+          canvasContext.fillText(customNoteName, x + 15, 900); // Draw text slightly offset from the point
+          inputField.value = inputField.value + "," + customNoteName;
+            // Determine the y position for the text
+          let yTextPosition = toggle ? yRaw - 10 : yRaw - 20;
+
+          canvasContext.fillText(customNoteName, x + 15, yTextPosition);
+          toggle = !toggle;
+
+
+          // Update the pitch element with both frequency and note name
+          pitchElement.innerHTML = `${customNoteName} (${rawFrequency.toFixed(
+            1
+          )} Hz)`;
+
+          // Draw the amplitude line in blue
+          // const yAmplitude = canvas.height - amplitude * canvas.height;
+          // canvasContext.beginPath();
+          // canvasContext.arc(x, yAmplitude, 3, 0, 2 * Math.PI);
+          //canvasContext.fillStyle = "blue";
+          // canvasContext.fill();
+        } else {
+          console.log("No significant frequency detected, skipping drawing");
+        }
+
+        count += 1;
+      }
+
+      document
+        .getElementById("start-button")
+        .addEventListener("click", async () => {
+          if (audioContext) return;
+
+          try {
+            // Create and resume AudioContext
+            audioContext = new (AudioContext || webkitAudioContext)();
+            await audioContext.resume();
+            console.log("AudioContext resumed.");
+
+            // Request access to the user's microphone
+            const stream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+            });
+            const source = audioContext.createMediaStreamSource(stream);
+            console.log("Microphone access granted.");
+
+            // Create a ScriptProcessorNode for audio processing
+            scriptProcessor = audioContext.createScriptProcessor(
+              bufferSize,
+              1,
+              1
+            );
+            source.connect(scriptProcessor);
+            scriptProcessor.connect(audioContext.destination);
+            console.log("ScriptProcessorNode created and connected.");
+
+            // Initialize aubio and the Pitch detector
+            const { Pitch } = await aubio();
+            pitchDetector = new Pitch(
+              "fcomb",
+              scriptProcessor.bufferSize * 4,
+              scriptProcessor.bufferSize,
+              audioContext.sampleRate
+            );
+            console.log("Pitch detector initialized.");
+
+            scriptProcessor.addEventListener("audioprocess", function (event) {
+              drawLogic(canvas, canvasContext);
+            });
+          } catch (err) {
+            console.error("Error:", err);
+          }
+        });
+
+      audio.addEventListener("play", async function (event) {
+        if (audioContext) return;
+
+        audioContext = new (AudioContext || webkitAudioContext)();
+        scriptProcessor = audioContext.createScriptProcessor(bufferSize, 1, 1);
+        audioSource = audioContext.createMediaElementSource(audio);
+        audioSource.connect(scriptProcessor);
+        audioSource.connect(audioContext.destination);
+        scriptProcessor.connect(audioContext.destination);
+
+        // Initialize aubio and the Pitch detector
+        const { Pitch } = await aubio();
+        pitchDetector = new Pitch(
+          "fcomb",
+          scriptProcessor.bufferSize * 4,
+          scriptProcessor.bufferSize,
+          audioContext.sampleRate
+        );
+        console.log("Pitch detector initialized.");
+
+        scriptProcessor.addEventListener("audioprocess", function (event) {
+          drawLogic(canvas, canvasContext);
+        });
+      });
+
+      document.getElementById("stop-button").addEventListener("click", () => {
+        if (!isRunning) return; // Prevent stopping if not running
+
+        if (scriptProcessor) {
+          scriptProcessor.disconnect();
+          scriptProcessor = null;
+        }
+
+        if (audioContext) {
+          audioContext.close().then(() => {
+            audioContext = null;
+            console.log("AudioContext closed.");
+          });
+        }
+
+        pitchDetector = null;
+        isRunning = false; // Update running status
+        pitchElement.innerHTML = "Stopped";
+      });
+    </script>
+  </body>
+</html>
